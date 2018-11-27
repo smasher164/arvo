@@ -244,6 +244,8 @@ func Lookup(ident string) Type {
 	return Ident
 }
 
+// should we separate token type and positional information?
+
 type Token struct {
 	Type   Type
 	Offset int
