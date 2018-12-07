@@ -316,7 +316,11 @@ func (p *parser) funLit() *ast.FunDef {
 	//p.exprLev++
 	body := p.body(scope)
 	//p.exprLev--
-	return &ast.FunDef{Fun: tok, Name: name, Lparen: lparen, Params: params, Rparen: rparen, Body: body}
+	def := &ast.FunDef{Fun: tok, Name: name, Lparen: lparen, Params: params, Rparen: rparen, Body: body}
+	if name != nil {
+		p.declare(def, nil, p.topScope, ast.Fun, name)
+	}
+	return def
 }
 
 // Operand = Literal | OperandName | "(" Expression ")" .
@@ -603,6 +607,44 @@ func (p *parser) stmtList() (list []ast.Stmt) {
 	return
 }
 
+func (p *parser) assignDecl(s *ast.AssignStmt) {
+	// Assignment statements require that the lhs is either
+	// all new variables or all old variables.
+	var ids []*ast.Ident
+	// if len(Lhs) != # identifiers, cannot be declaration
+	for _, x := range s.Lhs {
+		if id, isId := x.(*ast.Ident); isId {
+			ids = append(ids, id)
+		}
+	}
+	if len(s.Lhs) != len(ids) {
+		return
+	}
+	// if any variable exists in the current scope, cannot be declaration
+	// however, if some of those variables are new, that's an error
+	var pre *ast.Ident
+	for i := 0; i < len(ids); i++ {
+		if obj := p.topScope.Lookup(ids[i].Name.Lit); obj != nil {
+			pre = ids[i]
+			ids = ids[:i+copy(ids[i:], ids[i+1:])]
+			i--
+		}
+	}
+	if len(ids) < len(s.Lhs) {
+		if len(ids) > 0 {
+			// error
+			p.error(
+				ids[0].Name, fmt.Sprintf("combined old and new variables in assignment statement: %s and %s",
+					ids[0].Name.Lit,
+					pre.Name.Lit,
+				))
+		}
+		return
+	}
+	// no one is predeclared, so declare each identifier in assignment
+	p.declare(s, nil, p.topScope, ast.Var, ids...)
+}
+
 // SimpleStmt = EmptyStmt | ExpressionStmt | IncDecStmt | Assignment .
 func (p *parser) simpleStmt(mode int) (ast.Stmt, bool) {
 	xpos := p.tok
@@ -627,6 +669,7 @@ func (p *parser) simpleStmt(mode int) (ast.Stmt, bool) {
 		}
 		// we don't know if assignments are declarations yet
 		as := &ast.AssignStmt{Lhs: x, Tok: tok, Rhs: y}
+		p.assignDecl(as)
 		return as, isIn
 	}
 	if len(x) > 1 {
