@@ -9,7 +9,7 @@ import (
 )
 
 type Package struct {
-	files   []*File
+	Files   []*File
 	version string // TODO, type.
 }
 
@@ -22,6 +22,8 @@ type File struct {
 	Unresolved []*Ident
 	Src        NamedReader
 }
+
+type Node interface{}
 
 // maybe every node has positional information?
 type Stmt interface{}
@@ -100,7 +102,7 @@ func NewScope(outer *Scope) *Scope {
 type Object struct {
 	Kind ObjKind
 	Name string      // declared name
-	Decl interface{} // corresponding Field, XxxSpec, FuncDecl, LabeledStmt, AssignStmt, Scope; or nil
+	Decl interface{} // corresponding Field, XxxSpec, FuncDef, LabeledStmt, AssignStmt, Scope; or nil
 	Data interface{} // object-specific data; or nil
 	Type interface{} // placeholder for type information; may be nil
 }
@@ -181,9 +183,10 @@ type BasicLit struct {
 }
 
 type BlockStmt struct {
-	Lbrace scan.Token
-	List   []Stmt
-	Rbrace scan.Token
+	Comments *RelComments
+	Lbrace   scan.Token
+	List     []Stmt
+	Rbrace   scan.Token
 }
 
 type Param struct {
@@ -360,7 +363,6 @@ type DeclStmt struct {
 }
 
 type EmptyStmt struct {
-	Comments  *RelComments
 	Semicolon scan.Token
 	Implicit  bool
 }
@@ -381,3 +383,165 @@ type Ident struct {
 	Name scan.Token
 	Obj  *Object
 }
+
+func Walk(n Node, pre, post WalkFunc) Node {
+	if pre != nil && !pre(n) {
+		return n
+	}
+	switch n := n.(type) {
+	case nil:
+	case *RelComments, *Comment:
+	case *BadExpr, *Ident, *BasicLit:
+	case *FunDef:
+		Walk(n.Comments, pre, post)
+		Walk(n.Name, pre, post)
+		for _, p := range n.Params {
+			Walk(p, pre, post)
+		}
+		Walk(n.Body, pre, post)
+	case *CompositeLit:
+		Walk(n.Comments, pre, post)
+		Walk(n.Type, pre, post)
+		for _, e := range n.Elts {
+			Walk(e, pre, post)
+		}
+	case *ArrayLit:
+		Walk(n.Comments, pre, post)
+	case *RecordLit:
+		Walk(n.Comments, pre, post)
+	case *ParenExpr:
+		Walk(n.Comments, pre, post)
+		Walk(n.X, pre, post)
+	case *SelectorExpr:
+		Walk(n.Comments, pre, post)
+		Walk(n.X, pre, post)
+		Walk(n.Sel, pre, post)
+	case *IndexExpr:
+		Walk(n.Comments, pre, post)
+		Walk(n.X, pre, post)
+		Walk(n.Index, pre, post)
+	case *SliceExpr:
+		Walk(n.Comments, pre, post)
+		Walk(n.X, pre, post)
+		Walk(n.Low, pre, post)
+		Walk(n.High, pre, post)
+	case *CallExpr:
+		Walk(n.Comments, pre, post)
+		Walk(n.Fun, pre, post)
+		Walk(n.Args, pre, post)
+	case *UnaryExpr:
+		Walk(n.X, pre, post)
+	case *BinaryExpr:
+		Walk(n.Comments, pre, post)
+		Walk(n.X, pre, post)
+		Walk(n.Y, pre, post)
+	case *KeyValueExpr:
+		Walk(n.Comments, pre, post)
+		Walk(n.Key, pre, post)
+		Walk(n.Value, pre, post)
+	case *BadStmt:
+	case *DeclStmt:
+		Walk(n.Comments, pre, post)
+		Walk(n.Decl, pre, post)
+	case *EmptyStmt:
+	case *LabeledStmt:
+		Walk(n.Comments, pre, post)
+		Walk(n.Label, pre, post)
+		Walk(n.Stmt, pre, post)
+	case *ExprStmt:
+		Walk(n.Comments, pre, post)
+		Walk(n.X, pre, post)
+	case *IncDecStmt:
+		Walk(n.Comments, pre, post)
+		Walk(n.X, pre, post)
+	case *AssignStmt:
+		Walk(n.Comments, pre, post)
+		for _, e := range n.Lhs {
+			Walk(e, pre, post)
+		}
+		for _, e := range n.Rhs {
+			Walk(e, pre, post)
+		}
+	case *ReturnStmt:
+		Walk(n.Comments, pre, post)
+		for _, r := range n.Results {
+			Walk(r, pre, post)
+		}
+	case *BranchStmt:
+		Walk(n.Comments, pre, post)
+		Walk(n.Label, pre, post)
+	case *BlockStmt:
+		Walk(n.Comments, pre, post)
+		for _, s := range n.List {
+			Walk(s, pre, post)
+		}
+	case *IfStmt:
+		Walk(n.Comments, pre, post)
+		Walk(n.Init, pre, post)
+		Walk(n.Cond, pre, post)
+		Walk(n.Body, pre, post)
+		Walk(n.Else, pre, post)
+	case *CaseClause:
+		Walk(n.Comments, pre, post)
+		for _, e := range n.List {
+			Walk(e, pre, post)
+		}
+		for _, s := range n.Body {
+			Walk(s, pre, post)
+		}
+	case *SwitchStmt:
+		Walk(n.Comments, pre, post)
+		Walk(n.Init, pre, post)
+		Walk(n.Tag, pre, post)
+		Walk(n.Body, pre, post)
+	case *ForStmt:
+		Walk(n.Comments, pre, post)
+		Walk(n.Init, pre, post)
+		Walk(n.Cond, pre, post)
+		Walk(n.Post, pre, post)
+		Walk(n.Body, pre, post)
+	case *InStmt:
+		Walk(n.Comments, pre, post)
+		Walk(n.Index, pre, post)
+		Walk(n.Key, pre, post)
+		Walk(n.Value, pre, post)
+		Walk(n.X, pre, post)
+		Walk(n.Body, pre, post)
+	case *UseSpec:
+		Walk(n.Comments, pre, post)
+		Walk(n.Name, pre, post)
+	case *ValueSpec:
+		Walk(n.Comments, pre, post)
+		for _, id := range n.Names {
+			Walk(id, pre, post)
+		}
+		for _, e := range n.Values {
+			Walk(e, pre, post)
+		}
+	case *PackageDecl:
+		Walk(n.Comments, pre, post)
+	case *GenDecl:
+		Walk(n.Comments, pre, post)
+		for _, sp := range n.Specs {
+			Walk(sp, pre, post)
+		}
+	case *File:
+		Walk(n.Package, pre, post)
+		for _, d := range n.Decls {
+			Walk(d, pre, post)
+		}
+		for _, s := range n.Stmts {
+			Walk(s, pre, post)
+		}
+	case *Package:
+		for _, f := range n.Files {
+			Walk(f, pre, post)
+		}
+	}
+	if post != nil && !post(n) {
+		return n
+	}
+	return n
+}
+
+type WalkFunc func(Node) bool
