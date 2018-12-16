@@ -169,6 +169,9 @@ func (p *parser) lhsList() []ast.Expr {
 	p.inRhs = false
 	list := p.exprList(true)
 	// should we resolve idents here?
+	for _, x := range list {
+		p.resolve(x)
+	}
 	p.inRhs = old
 	return list
 }
@@ -213,7 +216,7 @@ func (p *parser) binaryExpr(lhs bool, prec1 int) ast.Expr {
 		}
 		tok := p.expect(op)
 		if lhs {
-			// p.resolve(x)
+			p.resolve(x)
 			lhs = false
 		}
 		y := p.binaryExpr(false, oprec+1)
@@ -316,7 +319,11 @@ func (p *parser) funLit() *ast.FunDef {
 	//p.exprLev++
 	body := p.body(scope)
 	//p.exprLev--
-	return &ast.FunDef{Fun: tok, Name: name, Lparen: lparen, Params: params, Rparen: rparen, Body: body}
+	def := &ast.FunDef{Fun: tok, Name: name, Lparen: lparen, Params: params, Rparen: rparen, Body: body}
+	if name != nil {
+		p.declare(def, nil, p.topScope, ast.Fun, name)
+	}
+	return def
 }
 
 // Operand = Literal | OperandName | "(" Expression ")" .
@@ -334,7 +341,7 @@ func (p *parser) operand(lhs bool) (x ast.Expr) {
 			x = p.ident()
 		}
 		if !lhs {
-			// p.resolve(x)
+			p.resolve(x)
 		}
 		return x
 	case scan.Int, scan.Float, scan.String:
@@ -451,7 +458,7 @@ L:
 		case scan.Period:
 			p.next()
 			if lhs {
-				// p.resolve(x)
+				p.resolve(x)
 			}
 			switch p.tok.Type {
 			case scan.Ident:
@@ -466,18 +473,18 @@ L:
 			}
 		case scan.Lbrack:
 			if lhs {
-				// p.resolve(x)
+				p.resolve(x)
 			}
 			x = p.indexOrSlice(x)
 		case scan.Lparen:
 			if lhs {
-				// p.resolve(x)
+				p.resolve(x)
 			}
 			x = p.callOrConversion(x)
 		case scan.Lbrace:
 			if isLiteralType(x) { // && (p.exprLev >= 0 || !isTypeName(x))
 				if lhs {
-					// p.resolve(x)
+					p.resolve(x)
 				}
 				x = p.literalValue(x)
 			} else {
@@ -496,7 +503,9 @@ func (p *parser) value(keyOk bool) ast.Expr {
 		return p.literalValue(nil)
 	}
 	// possibly resolve key/field names
-	return p.expr(keyOk)
+	x := p.expr(keyOk)
+	p.resolve(x)
+	return x
 }
 
 // KeyedElement = [ Element ":" ] Element .
@@ -578,6 +587,28 @@ func (p *parser) callOrConversion(fn ast.Expr) *ast.CallExpr {
 	return &ast.CallExpr{Fun: fn, Lparen: lparen, Args: list, Ellipsis: ellipsis, Rparen: rparen}
 }
 
+var unresolved = new(ast.Object)
+
+func (p *parser) resolve(x ast.Expr) {
+	ident, _ := x.(*ast.Ident)
+	if ident == nil {
+		return
+	}
+	if ident.Obj != nil {
+		// p.error(ident.Name, "identifier already declared or resolved")
+		return
+	}
+	if ident.Name.Lit == "_" {
+		return
+	}
+	if obj := p.recLookup(ident.Name.Lit); obj != nil {
+		ident.Obj = obj
+		return
+	}
+	ident.Obj = unresolved
+	p.unresolved = append(p.unresolved, ident)
+}
+
 func (p *parser) declare(decl, data interface{}, scope *ast.Scope, kind ast.ObjKind, idents ...*ast.Ident) {
 	for _, ident := range idents {
 		obj := ast.NewObj(kind, ident.Name.Lit)
@@ -601,6 +632,53 @@ func (p *parser) stmtList() (list []ast.Stmt) {
 		list = append(list, p.stmt())
 	}
 	return
+}
+
+func (p *parser) recLookup(name string) *ast.Object {
+	for s := p.topScope; s != nil; s = s.Outer {
+		if obj := s.Lookup(name); obj != nil {
+			return obj
+		}
+	}
+	return nil
+}
+
+func (p *parser) assignDecl(s *ast.AssignStmt) {
+	// Assignment statements require that the lhs is either
+	// all new variables or all old variables.
+	var ids []*ast.Ident
+	// if len(Lhs) != # identifiers, cannot be declaration
+	for _, x := range s.Lhs {
+		if id, isId := x.(*ast.Ident); isId {
+			ids = append(ids, id)
+		}
+	}
+	if len(s.Lhs) != len(ids) {
+		return
+	}
+	// if any variable exists in the current scope, cannot be declaration
+	// however, if some of those variables are new, that's an error
+	var pre *ast.Ident
+	for i := 0; i < len(ids); i++ {
+		if obj := p.recLookup(ids[i].Name.Lit); obj != nil {
+			pre = ids[i]
+			ids = ids[:i+copy(ids[i:], ids[i+1:])]
+			i--
+		}
+	}
+	if len(ids) < len(s.Lhs) {
+		if len(ids) > 0 {
+			// error
+			p.error(
+				ids[0].Name, fmt.Sprintf("combined old and new variables in assignment statement: %s and %s",
+					ids[0].Name.Lit,
+					pre.Name.Lit,
+				))
+		}
+		return
+	}
+	// no one is predeclared, so declare each identifier in assignment
+	p.declare(s, nil, p.topScope, ast.Var, ids...)
 }
 
 // SimpleStmt = EmptyStmt | ExpressionStmt | IncDecStmt | Assignment .
@@ -627,6 +705,7 @@ func (p *parser) simpleStmt(mode int) (ast.Stmt, bool) {
 		}
 		// we don't know if assignments are declarations yet
 		as := &ast.AssignStmt{Lhs: x, Tok: tok, Rhs: y}
+		p.assignDecl(as)
 		return as, isIn
 	}
 	if len(x) > 1 {
@@ -979,6 +1058,7 @@ func File(f *ast.File) error {
 		p.expectSemi()
 	}
 	p.openScope()
+	p.pkgScope = p.topScope
 	for p.tok.Type == scan.Use {
 		f.Decls = append(f.Decls, p.genDecl(scan.Use, p.useSpec))
 	}
@@ -995,7 +1075,7 @@ func File(f *ast.File) error {
 		}
 	}
 	f.Scope = p.pkgScope
-	f.Unresolved = p.unresolved
+	f.Unresolved = p.unresolved[:i]
 	return errd(p.errors)
 }
 
