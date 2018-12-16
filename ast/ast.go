@@ -9,7 +9,7 @@ import (
 )
 
 type Package struct {
-	files   []*File
+	Files   []*File
 	version string // TODO, type.
 }
 
@@ -22,6 +22,8 @@ type File struct {
 	Unresolved []*Ident
 	Src        NamedReader
 }
+
+type Node interface{}
 
 // maybe every node has positional information?
 type Stmt interface{}
@@ -100,7 +102,7 @@ func NewScope(outer *Scope) *Scope {
 type Object struct {
 	Kind ObjKind
 	Name string      // declared name
-	Decl interface{} // corresponding Field, XxxSpec, FuncDecl, LabeledStmt, AssignStmt, Scope; or nil
+	Decl interface{} // corresponding Field, XxxSpec, FuncDef, LabeledStmt, AssignStmt, Scope; or nil
 	Data interface{} // object-specific data; or nil
 	Type interface{} // placeholder for type information; may be nil
 }
@@ -181,9 +183,10 @@ type BasicLit struct {
 }
 
 type BlockStmt struct {
-	Lbrace scan.Token
-	List   []Stmt
-	Rbrace scan.Token
+	Comments *RelComments
+	Lbrace   scan.Token
+	List     []Stmt
+	Rbrace   scan.Token
 }
 
 type Param struct {
@@ -360,7 +363,6 @@ type DeclStmt struct {
 }
 
 type EmptyStmt struct {
-	Comments  *RelComments
 	Semicolon scan.Token
 	Implicit  bool
 }
