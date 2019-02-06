@@ -422,7 +422,7 @@ func (p *parser) indexOrSlice(x ast.Expr) ast.Expr {
 	}
 }
 
-// Selector = [ "." ] "." identifier .
+// Selector = "." identifier .
 func (p *parser) selector(x ast.Expr) ast.Expr {
 	sel := p.ident()
 	return &ast.SelectorExpr{X: x, Sel: sel}
