@@ -119,8 +119,13 @@ func (c *checker) set(n ast.Node, t Type) {
 	switch n := n.(type) {
 	case *ast.Ident:
 		if n != nil {
-			c.conf.Types[n.Obj] = t
-			return
+			if n.Obj != nil && n.Obj.Kind == ast.Fun {
+				if f, _ := n.Obj.Decl.(*ast.FunDef); f != nil {
+					c.set(f.Name, t)
+				}
+			} else {
+				c.conf.Types[n] = t
+			}
 		}
 		c.conf.Types[n] = t
 	default:
@@ -128,11 +133,35 @@ func (c *checker) set(n ast.Node, t Type) {
 	}
 }
 
+func (c *Config) Get(n ast.Node) Type {
+	switch n := n.(type) {
+	case *ast.Ident:
+		if n != nil {
+			if n.Obj != nil && n.Obj.Kind == ast.Fun {
+				if f, _ := n.Obj.Decl.(*ast.FunDef); f != nil {
+					return c.Get(f.Name)
+				}
+			} else {
+				return c.Types[n.Obj]
+			}
+		}
+		return c.Types[n]
+	default:
+		return c.Types[n]
+	}
+}
+
 func (c *checker) get(n ast.Node) Type {
 	switch n := n.(type) {
 	case *ast.Ident:
 		if n != nil {
-			return c.conf.Types[n.Obj]
+			if n.Obj != nil && n.Obj.Kind == ast.Fun {
+				if f, _ := n.Obj.Decl.(*ast.FunDef); f != nil {
+					return c.get(f.Name)
+				}
+			} else {
+				return c.conf.Types[n]
+			}
 		}
 		return c.conf.Types[n]
 	default:
@@ -261,6 +290,7 @@ func (c *checker) post(n ast.Node) bool {
 			sig.Params[i] = c.get(t.Params[i].Name)
 		}
 		sig.Results = c.popret()
+		sig.ResultLen = len(sig.Results)
 		c.set(t, sig)
 		c.set(t.Name, sig)
 	case *ast.CompositeLit:
@@ -308,7 +338,7 @@ func (c *checker) post(n ast.Node) bool {
 				if t0.Value != nil && c.get(t.Index) != nil && t0.Value != c.get(t.Index) {
 					c.errorf("array value and index types do not match")
 				}
-				c.set(t, Array{Key: Num, Value: c.get(c.eval(t.Index))})
+				c.set(t, Array{Key: Num, Value: c.eval(c.get(t.Index))})
 			case Record:
 				c.errorf("record cannot be reverse-indexed")
 			}
@@ -339,13 +369,13 @@ func (c *checker) post(n ast.Node) bool {
 			if c.get(t.Low) != Num && c.get(t.High) != Num {
 				c.errorf("slice bounds must be numbers")
 			}
-			c.set(t, c.get(c.eval(t.X)))
+			c.set(t, c.eval(c.get(t.X)))
 		case Record:
 			c.errorf("record cannot be sliced")
 		}
 	case *ast.CallExpr:
 		inv, ok := c.get(t).(Invocation)
-		assert(ok, "cannot retrive function invocation")
+		assert(ok, "cannot retrieve function invocation")
 		sig, ok := c.get(t.Fun).(Signature)
 		assert(ok, "cannot retrieve function declaration")
 		if !sig.Variadic && inv.ArgLen != sig.ParamLen {
@@ -410,7 +440,7 @@ func (c *checker) post(n ast.Node) bool {
 		// otherwise set t's type to be t.X's type
 		c.set(t, c.eval(tx))
 	case *ast.KeyValueExpr:
-		c.set(t, Element{Key: c.get(c.eval(t.Key)), Value: c.get(c.eval(t.Value))})
+		c.set(t, Element{Key: c.eval(c.get(t.Key)), Value: c.eval(c.get(t.Value))})
 	// case *BadStmt:
 	case *ast.DeclStmt:
 	// case *EmptyStmt:
@@ -433,15 +463,17 @@ func (c *checker) post(n ast.Node) bool {
 				c.errorf("lhs does not match rhs type")
 				break
 			}
-			c.set(t.Lhs[0], c.get(c.eval(t.Rhs[0])))
+			c.set(t.Lhs[0], c.eval(c.get(t.Rhs[0])))
 		} else {
 			for i := range t.Lhs {
 				if t0 := c.get(t.Lhs[i]); t0 != nil {
-					if !match(t0, c.get(c.eval(t.Rhs[i]))) {
+					if !match(t0, c.eval(c.get(t.Rhs[i]))) {
 						c.errorf("lhs does not match rhs type")
 					} else {
-						c.set(t.Lhs[i], c.get(c.eval(t.Rhs[i])))
+						c.set(t.Lhs[i], c.eval(c.get(t.Rhs[i])))
 					}
+				} else {
+					c.set(t.Lhs[i], c.eval(c.get(t.Rhs[i])))
 				}
 			}
 		}
@@ -449,7 +481,7 @@ func (c *checker) post(n ast.Node) bool {
 		tuple := c.conf.retstk[len(c.conf.retstk)-1]
 		if tuple == nil {
 			for i := range t.Results {
-				tuple = append(tuple, c.get(c.eval(t.Results[i])))
+				tuple = append(tuple, c.eval(c.get(t.Results[i])))
 			}
 			c.popret()
 			c.pushret(tuple)
@@ -498,7 +530,7 @@ func (c *checker) post(n ast.Node) bool {
 			break
 		}
 		for i := range t.Names {
-			c.set(t.Names[i], c.get(c.eval(t.Values[i])))
+			c.set(t.Names[i], c.eval(c.get(t.Values[i])))
 		}
 	// case *PackageDecl:
 	// case *ast.GenDecl:
