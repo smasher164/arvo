@@ -142,7 +142,7 @@ func (c *Config) Get(n ast.Node) Type {
 					return c.Get(f.Name)
 				}
 			} else {
-				return c.Types[n.Obj]
+				return c.Types[n]
 			}
 		}
 		return c.Types[n]
