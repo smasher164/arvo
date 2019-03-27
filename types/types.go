@@ -81,7 +81,7 @@ type Signature struct {
 	Variadic  bool
 }
 
-type same *Type
+type Same *Type
 
 type Invocation struct {
 	ArgLen int
@@ -102,7 +102,7 @@ func match(a, b Type) bool {
 	switch t := b.(type) {
 	case or:
 		return match(a, t.A) || match(a, t.B)
-	case same:
+	case Same:
 		if t != nil {
 			return match(a, *t)
 		}
@@ -110,6 +110,8 @@ func match(a, b Type) bool {
 		// case Record:
 		// case Signature:
 		// case Invocation:
+	// case nil:
+	// 	return true
 	default:
 		return reflect.DeepEqual(a, b)
 	}
@@ -119,9 +121,15 @@ func (c *checker) set(n ast.Node, t Type) {
 	switch n := n.(type) {
 	case *ast.Ident:
 		if n != nil {
-			if n.Obj != nil && n.Obj.Kind == ast.Fun {
-				if f, _ := n.Obj.Decl.(*ast.FunDef); f != nil {
-					c.set(f.Name, t)
+			if n.Obj != nil {
+				if n.Obj.Kind == ast.Fun {
+					if f, _ := n.Obj.Decl.(*ast.FunDef); f != nil {
+						c.set(f.Name, t)
+					}
+				} else if n.Obj.Kind == ast.Var {
+					if pr, _ := n.Obj.Decl.(*ast.Param); pr != nil {
+						c.set(pr.Name, t)
+					}
 				}
 			} else {
 				c.conf.Types[n] = t
@@ -137,9 +145,15 @@ func (c *Config) Get(n ast.Node) Type {
 	switch n := n.(type) {
 	case *ast.Ident:
 		if n != nil {
-			if n.Obj != nil && n.Obj.Kind == ast.Fun {
-				if f, _ := n.Obj.Decl.(*ast.FunDef); f != nil {
-					return c.Get(f.Name)
+			if n.Obj != nil {
+				if n.Obj.Kind == ast.Fun {
+					if f, _ := n.Obj.Decl.(*ast.FunDef); f != nil {
+						return c.Get(f.Name)
+					}
+				} else if n.Obj.Kind == ast.Var {
+					if pr, _ := n.Obj.Decl.(*ast.Param); pr != nil {
+						return c.Get(pr.Name)
+					}
 				}
 			} else {
 				return c.Types[n]
@@ -155,9 +169,15 @@ func (c *checker) get(n ast.Node) Type {
 	switch n := n.(type) {
 	case *ast.Ident:
 		if n != nil {
-			if n.Obj != nil && n.Obj.Kind == ast.Fun {
-				if f, _ := n.Obj.Decl.(*ast.FunDef); f != nil {
-					return c.get(f.Name)
+			if n.Obj != nil {
+				if n.Obj.Kind == ast.Fun {
+					if f, _ := n.Obj.Decl.(*ast.FunDef); f != nil {
+						return c.get(f.Name)
+					}
+				} else if n.Obj.Kind == ast.Var {
+					if pr, _ := n.Obj.Decl.(*ast.Param); pr != nil {
+						return c.get(pr.Name)
+					}
 				}
 			} else {
 				return c.conf.Types[n]
@@ -180,6 +200,8 @@ func (c *checker) eval(t Type) Type {
 			}
 		}
 		return nil
+	case or:
+		return or{c.eval(t.A), c.eval(t.B)}
 	default:
 		return t
 	}
@@ -215,9 +237,9 @@ func (c *checker) pre(n ast.Node) bool {
 				variadic = true
 			}
 		}
-		c.set(t, Signature{ParamLen: len(t.Params), Variadic: variadic})
+		c.set(t, Signature{ParamLen: len(t.Params), Params: make([]Type, len(t.Params)), Variadic: variadic})
 		if t.Name != nil {
-			c.set(t.Name, Signature{ParamLen: len(t.Params), Variadic: variadic})
+			c.set(t.Name, Signature{ParamLen: len(t.Params), Params: make([]Type, len(t.Params)), Variadic: variadic})
 		}
 		c.pushret(nil)
 	case *ast.CompositeLit:
@@ -393,13 +415,13 @@ func (c *checker) post(n ast.Node) bool {
 		for i := 0; i < n; i++ {
 			at := c.get(t.Args[i])
 			inv.Args = append(inv.Args, at)
-			if !match(at, c.get(sig.Params[i])) {
+			if !match(at, c.eval(sig.Params[i])) {
 				c.errorf("argument types don't match parameter types")
 				break
 			}
 		}
 		if sig.Variadic {
-			ar, ok := c.get(sig.Params[len(sig.Params)-1]).(Array)
+			ar, ok := sig.Params[len(sig.Params)-1].(Array)
 			if !ok {
 				panic("variadic parameter must have type array")
 			}
@@ -423,22 +445,39 @@ func (c *checker) post(n ast.Node) bool {
 				c.errorf("unary operation can only be performed on number or bool")
 				break
 			}
+		} else {
+			typ = or{Bool, Num}
 		}
-		// otherwise set t's type to be t.X's type
-		c.set(t, c.eval(typ))
+		typ = c.eval(typ)
+		c.set(t, typ)
+		c.set(t.X, typ)
 	case *ast.BinaryExpr:
-		// if t.X and t.Y have types and either one is not a number or a bool, error
 		tx, ty := c.get(t.X), c.get(t.Y)
-		if tx != nil && ty != nil {
-			tx0, ok1 := tx.(Basic)
-			ty0, ok2 := ty.(Basic)
-			if (!ok1 || tx0 == String) || (!ok2 || ty0 == String) {
-				c.errorf("binary operation can only be performed between numbers or bools")
-				break
+		var typ Type
+		if t.Op.Type == scan.Add {
+			if tx != nil || ty != nil {
+				typ = or{tx, ty}
+			} else {
+				typ = or{or{Bool, Num}, String}
+			}
+		} else {
+			if tx != nil && ty != nil {
+				tx0, ok1 := tx.(Basic)
+				ty0, ok2 := ty.(Basic)
+				if (!ok1 || tx0 == String) || (!ok2 || ty0 == String) {
+					c.errorf("binary operation can only be performed between numbers or bools")
+					break
+				} else {
+					typ = or{tx, ty}
+				}
+			} else {
+				typ = or{Bool, Num}
 			}
 		}
-		// otherwise set t's type to be t.X's type
-		c.set(t, c.eval(tx))
+		typ = c.eval(typ)
+		c.set(t, typ)
+		c.set(t.X, typ)
+		c.set(t.Y, Same(&typ))
 	case *ast.KeyValueExpr:
 		c.set(t, Element{Key: c.eval(c.get(t.Key)), Value: c.eval(c.get(t.Value))})
 	// case *BadStmt:
@@ -516,7 +555,7 @@ func (c *checker) post(n ast.Node) bool {
 					if t2 := c.get(e); t2 != nil && t2 != typ {
 						c.errorf("case expressions must match switch tag type")
 					} else {
-						c.set(e, same(&typ))
+						c.set(e, Same(&typ))
 					}
 				}
 			}

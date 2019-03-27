@@ -237,27 +237,27 @@ func (p *parser) unaryExpr(lhs bool) ast.Expr {
 }
 
 // ArrayLit = "a" AssocLit .
-func (p *parser) arrayLit() *ast.ArrayLit {
+func (p *parser) arrayLit() ast.Expr {
 	tok := p.tok
 	if tok.Type != scan.Ident && tok.Lit != "a" {
 		p.error(tok, "'"+scan.Ident.String()+"'")
 	}
 	p.next()
 	if p.tok.Type != scan.Lbrace {
-		p.error(tok, "'"+scan.Lbrace.String()+"'")
+		return &ast.Ident{Name: tok}
 	}
 	return &ast.ArrayLit{A: tok}
 }
 
 // RecordLit = "r" AssocLit .
-func (p *parser) recordLit() *ast.RecordLit {
+func (p *parser) recordLit() ast.Expr {
 	tok := p.tok
 	if tok.Type != scan.Ident && tok.Lit != "r" {
 		p.error(tok, "'"+scan.Ident.String()+"'")
 	}
 	p.next()
 	if p.tok.Type != scan.Lbrace {
-		p.error(tok, "'"+scan.Lbrace.String()+"'")
+		return &ast.Ident{Name: tok}
 	}
 	return &ast.RecordLit{R: tok}
 }
@@ -291,6 +291,7 @@ func (p *parser) parameterList(scope *ast.Scope) []*ast.Param {
 			p.next()
 		}
 		list = append(list, &pr)
+		p.declare(&pr, nil, scope, ast.Var, pr.Name)
 	}
 	if nellipsis > 1 || (nellipsis > 0 && list[len(list)-1].Ellipsis.Type == scan.Ellipsis) {
 		p.error(p.tok, fmt.Sprintf("can only use ... with final parameter in list"))

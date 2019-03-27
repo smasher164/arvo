@@ -428,7 +428,9 @@ func Walk(n Node, pre, post WalkFunc) Node {
 	case *CallExpr:
 		Walk(n.Comments, pre, post)
 		Walk(n.Fun, pre, post)
-		Walk(n.Args, pre, post)
+		for _, e := range n.Args {
+			Walk(e, pre, post)
+		}
 	case *UnaryExpr:
 		Walk(n.X, pre, post)
 	case *BinaryExpr:
