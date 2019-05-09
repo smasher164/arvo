@@ -98,23 +98,34 @@ type or struct {
 	A, B Type
 }
 
+func Match(a, b Type) bool {
+	return match(a, b)
+}
+
 func match(a, b Type) bool {
-	switch t := b.(type) {
+	switch ta := a.(type) {
 	case or:
-		return match(a, t.A) || match(a, t.B)
+		return match(ta.A, b) || match(ta.B, b)
 	case Same:
-		if t != nil {
-			return match(a, *t)
+		if ta != nil {
+			return match(*ta, b)
 		}
 		return reflect.DeepEqual(a, b)
-		// case Record:
-		// case Signature:
-		// case Invocation:
-	// case nil:
-	// 	return true
-	default:
-		return reflect.DeepEqual(a, b)
+	case nil:
+		return true
 	}
+	switch tb := b.(type) {
+	case or:
+		return match(a, tb.A) || match(a, tb.B)
+	case Same:
+		if tb != nil {
+			return match(a, *tb)
+		}
+		return reflect.DeepEqual(a, b)
+	case nil:
+		return true
+	}
+	return reflect.DeepEqual(a, b)
 }
 
 func (c *checker) set(n ast.Node, t Type) {
@@ -124,11 +135,21 @@ func (c *checker) set(n ast.Node, t Type) {
 			if n.Obj != nil {
 				if n.Obj.Kind == ast.Fun {
 					if f, _ := n.Obj.Decl.(*ast.FunDef); f != nil {
-						c.set(f.Name, t)
+						// maybe an issue with anonymous functions?
+						c.conf.Types[f.Name] = t
 					}
 				} else if n.Obj.Kind == ast.Var {
 					if pr, _ := n.Obj.Decl.(*ast.Param); pr != nil {
-						c.set(pr.Name, t)
+						c.conf.Types[pr.Name] = t
+					} else if as, _ := n.Obj.Decl.(*ast.AssignStmt); as != nil {
+						for _, e := range as.Lhs {
+							if id, _ := e.(*ast.Ident); id != nil {
+								if id.Name.Lit == n.Name.Lit {
+									c.conf.Types[id] = t
+									break
+								}
+							}
+						}
 					}
 				}
 			} else {
@@ -148,11 +169,19 @@ func (c *Config) Get(n ast.Node) Type {
 			if n.Obj != nil {
 				if n.Obj.Kind == ast.Fun {
 					if f, _ := n.Obj.Decl.(*ast.FunDef); f != nil {
-						return c.Get(f.Name)
+						return c.Types[f.Name]
 					}
 				} else if n.Obj.Kind == ast.Var {
 					if pr, _ := n.Obj.Decl.(*ast.Param); pr != nil {
-						return c.Get(pr.Name)
+						return c.Types[pr.Name]
+					} else if as, _ := n.Obj.Decl.(*ast.AssignStmt); as != nil {
+						for _, e := range as.Lhs {
+							if id, _ := e.(*ast.Ident); id != nil {
+								if id.Name.Lit == n.Name.Lit {
+									return c.Types[id]
+								}
+							}
+						}
 					}
 				}
 			} else {
@@ -172,11 +201,19 @@ func (c *checker) get(n ast.Node) Type {
 			if n.Obj != nil {
 				if n.Obj.Kind == ast.Fun {
 					if f, _ := n.Obj.Decl.(*ast.FunDef); f != nil {
-						return c.get(f.Name)
+						return c.conf.Types[f.Name]
 					}
 				} else if n.Obj.Kind == ast.Var {
 					if pr, _ := n.Obj.Decl.(*ast.Param); pr != nil {
-						return c.get(pr.Name)
+						return c.conf.Types[pr.Name]
+					} else if as, _ := n.Obj.Decl.(*ast.AssignStmt); as != nil {
+						for _, e := range as.Lhs {
+							if id, _ := e.(*ast.Ident); id != nil {
+								if id.Name.Lit == n.Name.Lit {
+									return c.conf.Types[id]
+								}
+							}
+						}
 					}
 				}
 			} else {
@@ -211,6 +248,18 @@ func assert(cond bool, msg string) {
 	if !cond {
 		panic(msg)
 	}
+}
+
+func getCalledDef(e *ast.CallExpr) *ast.FunDef {
+	switch t := e.Fun.(type) {
+	case *ast.Ident:
+		if t2, _ := t.Obj.Decl.(*ast.FunDef); t2 != nil {
+			return t2
+		}
+	case *ast.FunDef:
+		return t
+	}
+	return nil
 }
 
 // on the way down
@@ -310,6 +359,9 @@ func (c *checker) post(n ast.Node) bool {
 		assert(ok, "function definition contains signature")
 		for i := range sig.Params {
 			sig.Params[i] = c.get(t.Params[i].Name)
+		}
+		if sig.Variadic {
+			sig.Params[len(sig.Params)-1] = Array{Key: Num, Value: sig.Params[len(sig.Params)-1]}
 		}
 		sig.Results = c.popret()
 		sig.ResultLen = len(sig.Results)
@@ -415,14 +467,23 @@ func (c *checker) post(n ast.Node) bool {
 		for i := 0; i < n; i++ {
 			at := c.get(t.Args[i])
 			inv.Args = append(inv.Args, at)
+			typ := c.eval(sig.Params[i])
 			if !match(at, c.eval(sig.Params[i])) {
 				c.errorf("argument types don't match parameter types")
 				break
 			}
+			if typ == nil {
+				if ce := getCalledDef(t); ce != nil {
+					ot := or{typ, at}
+					c.set(ce.Params[i], ot)
+					// reflow function's type
+					sig.Params[i] = ot
+				}
+			}
 		}
 		if sig.Variadic {
 			ar, ok := sig.Params[len(sig.Params)-1].(Array)
-			if !ok {
+			if !ok && inv.ArgLen >= sig.ParamLen {
 				panic("variadic parameter must have type array")
 			}
 			t1 := ar.Value
@@ -454,7 +515,9 @@ func (c *checker) post(n ast.Node) bool {
 	case *ast.BinaryExpr:
 		tx, ty := c.get(t.X), c.get(t.Y)
 		var typ Type
-		if t.Op.Type == scan.Add {
+		if t.Op.Type == scan.Add || t.Op.Type == scan.Eql || t.Op.Type == scan.Lss ||
+			t.Op.Type == scan.Gtr || t.Op.Type == scan.Neq ||
+			t.Op.Type == scan.Leq || t.Op.Type == scan.Geq {
 			if tx != nil || ty != nil {
 				typ = or{tx, ty}
 			} else {
@@ -507,6 +570,7 @@ func (c *checker) post(n ast.Node) bool {
 			for i := range t.Lhs {
 				if t0 := c.get(t.Lhs[i]); t0 != nil {
 					if !match(t0, c.eval(c.get(t.Rhs[i]))) {
+						fmt.Println("HEREAFTER")
 						c.errorf("lhs does not match rhs type")
 					} else {
 						c.set(t.Lhs[i], c.eval(c.get(t.Rhs[i])))

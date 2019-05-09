@@ -9,6 +9,8 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
+	"strings"
 
 	"github.com/smasher164/arvo/ast"
 	"github.com/smasher164/arvo/scan"
@@ -279,12 +281,18 @@ func (p *parser) body(scope *ast.Scope) *ast.BlockStmt {
 func (p *parser) parameterList(scope *ast.Scope) []*ast.Param {
 	var list []*ast.Param
 	nellipsis := 0
+	i := 0
+	first := false
 	for p.tok.Type != scan.Rparen && p.tok.Type != scan.EOF {
+		if !first {
+			i++
+		}
 		var pr ast.Param
 		if p.tok.Type == scan.Ellipsis {
 			nellipsis++
 			pr.Ellipsis = p.tok
 			p.next()
+			first = true
 		}
 		pr.Name = p.ident()
 		if p.tok.Type == scan.Comma {
@@ -293,7 +301,7 @@ func (p *parser) parameterList(scope *ast.Scope) []*ast.Param {
 		list = append(list, &pr)
 		p.declare(&pr, nil, scope, ast.Var, pr.Name)
 	}
-	if nellipsis > 1 || (nellipsis > 0 && list[len(list)-1].Ellipsis.Type == scan.Ellipsis) {
+	if nellipsis > 1 || (nellipsis > 0 && i < len(list)-1) {
 		p.error(p.tok, fmt.Sprintf("can only use ... with final parameter in list"))
 	}
 	return list
@@ -432,7 +440,6 @@ func (p *parser) selector(x ast.Expr) ast.Expr {
 func isLiteralType(x ast.Expr) bool {
 	switch t := x.(type) {
 	case *ast.BadExpr:
-	case *ast.Ident:
 	case *ast.SelectorExpr:
 		_, isIdent := t.X.(*ast.Ident)
 		return isIdent
@@ -615,6 +622,7 @@ func (p *parser) declare(decl, data interface{}, scope *ast.Scope, kind ast.ObjK
 		obj := ast.NewObj(kind, ident.Name.Lit)
 		obj.Decl = decl
 		obj.Data = data
+		ident.Obj = obj
 		if ident.Name.Lit != "_" {
 			if alt := scope.Insert(obj); alt != nil {
 				var prevDecl string
@@ -1049,7 +1057,12 @@ func errd(es []Error) error {
 func File(f *ast.File) error {
 	// SourceFile = [ PackageClause ";" ] { UseDecl ";" } StatementList .
 	p := new(parser)
-	p.sc = scan.New(bufio.NewReader(f.Src))
+	// TODO(akhil): remove this when implementing packages! This way of including builtins
+	// breaks code with a package declaration!
+	r := io.MultiReader(strings.NewReader(
+		"fun exit(status) {}\n"+"fun printf(s1, ...s2) {}\n",
+	), f.Src)
+	p.sc = scan.New(bufio.NewReader(r))
 	p.next()
 	if p.tok.Type == scan.Pkg {
 		f.Package.Package = p.tok
