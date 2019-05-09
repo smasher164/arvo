@@ -245,7 +245,7 @@ func (s *Scanner) number(ch rune) {
 				mustBeFloat = true
 				s.scanMantissa(10)
 			}
-			if s.accept(".eE") {
+			if ch == '.' || ch == 'e' || ch == 'E' {
 				s.floating(rune(s.buf[s.pos-1]))
 				return
 			}
@@ -495,7 +495,7 @@ func (s *Scanner) Scan() Token {
 				c := s.peek()
 				if isDecimalDigit(c) {
 					s.floating(ch)
-				} else if c == '.' && s.peek() != '.' {
+				} else if c == '.' {
 					s.next()
 					c = s.next()
 					if c == '.' {
